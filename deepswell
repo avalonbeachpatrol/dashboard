@@ -1,0 +1,149 @@
+name: Update DeepSwell Conditions
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "4,14,24,34,44,54 * * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-deepswell
+  cancel-in-progress: true
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Retrieve Avalon 30th Street DeepSwell data
+        run: |
+          python3 <<'PY'
+          import html
+          import json
+          import math
+          import re
+          import urllib.request
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          URL = "https://deepswell.com/surf-report/US/New-Jersey/Avalon-30th-Street/2149"
+
+          request = urllib.request.Request(
+              URL,
+              headers={
+                  "User-Agent": "Mozilla/5.0 ABP-Conditions-Dashboard",
+                  "Accept": "text/html,application/xhtml+xml",
+              },
+          )
+
+          with urllib.request.urlopen(request, timeout=30) as response:
+              raw_html = response.read().decode("utf-8", errors="replace")
+
+          text = html.unescape(re.sub(r"<[^>]+>", " ", raw_html))
+          text = re.sub(r"\s+", " ", text)
+
+          height_match = re.search(
+              r"Surf Height\s+([0-9]+(?:\.[0-9]+)?(?:\s*-\s*[0-9]+(?:\.[0-9]+)?)?\+?)\s*ft",
+              text,
+              re.I,
+          )
+
+          period_match = re.search(
+              r"dominant period of\s+([0-9]+(?:\.[0-9]+)?)\s+seconds",
+              text,
+              re.I,
+          )
+
+          swell_matches = re.findall(
+              r"SWELL\d+\s+([0-9.]+)\s*ft,\s*([0-9.]+)°\s*@\s*([0-9.]+)s",
+              text,
+              re.I,
+          )
+
+          if not height_match:
+              raise RuntimeError("Could not find DeepSwell breaking-surf height")
+
+          surf_height = re.sub(r"\s+", "", height_match.group(1))
+          dominant_period = float(period_match.group(1)) if period_match else None
+
+          parsed_swells = [
+              {
+                  "height": float(height),
+                  "direction": float(direction),
+                  "period": float(period),
+              }
+              for height, direction, period in swell_matches
+          ]
+
+          primary = None
+          if parsed_swells and dominant_period is not None:
+              primary = min(
+                  parsed_swells,
+                  key=lambda swell: abs(swell["period"] - dominant_period),
+              )
+          elif parsed_swells:
+              primary = max(parsed_swells, key=lambda swell: swell["period"])
+
+          if dominant_period is None and primary:
+              dominant_period = primary["period"]
+
+          compass = [
+              "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+              "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW",
+          ]
+
+          swell_direction = None
+          if primary:
+              swell_direction = compass[round(primary["direction"] / 22.5) % 16]
+
+          if dominant_period is None or swell_direction is None:
+              raise RuntimeError("Could not find DeepSwell period or direction")
+
+          wave_period = (
+              int(round(dominant_period))
+              if math.isclose(dominant_period, round(dominant_period))
+              else round(dominant_period, 1)
+          )
+
+          new_data = {
+              "surf_height": surf_height,
+              "wave_period": wave_period,
+              "swell_direction": swell_direction,
+              "source": "DeepSwell Avalon / 30th Street",
+              "source_url": URL,
+          }
+
+          output = Path("surf-data.json")
+
+          if output.exists():
+              try:
+                  existing = json.loads(output.read_text())
+                  fields = ["surf_height", "wave_period", "swell_direction"]
+                  if all(existing.get(key) == new_data.get(key) for key in fields):
+                      print("DeepSwell conditions have not changed.")
+                      raise SystemExit(0)
+              except json.JSONDecodeError:
+                  pass
+
+          new_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+          output.write_text(json.dumps(new_data, indent=2) + "\n")
+          print(json.dumps(new_data, indent=2))
+          PY
+
+      - name: Save updated conditions
+        run: |
+          if [ -z "$(git status --porcelain -- surf-data.json)" ]; then
+            echo "No DeepSwell changes to save."
+            exit 0
+          fi
+
+          git config user.name "ABP Conditions Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add surf-data.json
+          git commit -m "Update DeepSwell conditions"
+          git push
