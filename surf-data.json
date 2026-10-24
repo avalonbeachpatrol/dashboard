@@ -1,8 +1,8 @@
 {
-  "surf_height": "2-4",
+  "surf_height": "2-3+",
   "wave_period": 10,
-  "swell_direction": "ESE",
+  "swell_direction": "ENE",
   "source": "DeepSwell Avalon / 30th Street",
   "source_url": "https://deepswell.com/surf-report/US/New-Jersey/Avalon-30th-Street/2149",
-  "updated_at": "2026-10-24T07:11:25.582443+00:00"
+  "updated_at": "2026-10-24T12:02:16.238937+00:00"
 }
